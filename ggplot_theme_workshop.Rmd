@@ -70,7 +70,9 @@ dat_sum <- dat_sum %>% mutate(label = case_when(
 ```{r original}
 p <- ggplot(dat_sum, aes(x = inclusion_year, y = n_cumulative, fill = disease)) +
   geom_area(stat = "identity") +
-  facet_wrap(~gender)
+  facet_wrap(~gender) +
+  xlab("Year of inclusion") +
+  ylab("Cumulative nr. of patients")
 p
 ```
 
