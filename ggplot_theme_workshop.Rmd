@@ -1,0 +1,383 @@
+---
+title: "Personalize your own ggplot theme"
+author: "Seraphina Kissling"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(2022)
+```
+
+## create data set
+First, we create a data set to illustrate our example. 
+We simulate 100 patients who were included into the registries between 2000 and now.
+
+```{r libraries, warning=FALSE, message=FALSE, echo = FALSE}
+library(dplyr)
+library(tidyr) # complete()
+library(lubridate) # floor_date()
+library(ggplot2)
+```
+
+```{r data}
+scqm_data <- data.frame(
+  disease = sample(factor(c("RA", "axSpA","PsA"), 
+                          levels = c("RA", "axSpA", "PsA")), 
+                   size = 100, 
+                   replace = TRUE, 
+                   prob = c(0.5, 0.3, 0.2)),
+  gender = factor(sample(x = c("m", "f"), 
+                         size = 100, replace = TRUE), 
+                  levels = c("m", "f")),
+  inclusion_date = as.Date(seq(from = as.Date("2000-01-01"), 
+                               to = Sys.Date(), 
+                               length.out = 100))
+)
+summary(scqm_data)
+
+# the summarised data set for the plot
+dat_sum <- scqm_data %>% 
+  mutate(inclusion_year = floor_date(ymd(inclusion_date), unit = "year")) %>%
+  group_by(inclusion_year, disease, gender) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  complete(inclusion_year, disease, gender,  fill=list(n=0))  %>%
+  arrange(disease, inclusion_year, gender) %>%
+  group_by(disease, gender) %>%
+  mutate(n_cumulative = cumsum(n)) %>%
+  as.data.frame()
+str(dat_sum)
+
+# create labels for latest cumulative value
+dat_sum <- dat_sum %>% mutate(label = case_when(
+  (inclusion_year == max(dat_sum$inclusion_year)) ~ n_cumulative,
+  TRUE ~ NA_integer_
+))
+```
+
+## ggplot themes
+
+### ggplot default theme
+```{r original}
+p <- ggplot(dat_sum, aes(x = inclusion_year, y = n_cumulative, fill = disease)) +
+  geom_area(stat = "identity") +
+  facet_wrap(~gender)
+p
+```
+
+
+### other ggplot themes
+Most of you probably know some of the ggplot built-in themes such as theme_bw() 
+or theme_minimal(). The background changed from grey to white.
+```{r mininal}
+p + theme_bw()
+```
+
+### BBC theme
+We try how our plot looks like with a theme that BBC shares
+online: https://github.com/bbc/bbplot
+We see some changes to the grid lines, and the legend is now on top.
+```{r bbcstyle}
+source("bbc_style.R")
+p + bbc_style()
+```
+
+### SCQM theme
+Now we want to create our own theme.
+```{r scqm}
+source("theme_scqm.R")
+p + theme_scqm()
+
+# an adapted version to show how you can still tweak it
+p +
+  theme_scqm(text_color = "#7b4264", grid_color = "#7b4264", 
+             alignment = 0, font = "serif") +
+  theme(legend.position = "top", legend.title = element_blank())
+```
+
+## custom color palettes
+With the theme, we were able to manipulate most aspects of the plot, but not
+the colors used in the plot. To define custom colors, I followed this post: https://meghan.rbind.io/blog/2022-10-11-creating-custom-color-palettes-with-ggplot2/
+
+### defining the color palettes
+We will create 2 functions: one which defines the HEX code of the colors we use
+in our palettes. The second function defines the palettes we will want to use
+later on in the plots.
+```{r}
+# from https://meghan.rbind.io/blog/2022-10-11-creating-custom-color-palettes-with-ggplot2/
+scqm_color <- function(...) {
+
+  # by SCQM CICD, each color is defined as dark and as light (60% hue of dark)
+  scqm_colors <- c(
+    
+    # main palette
+    `blue` = '#416896',
+    `lightblue` = '#8da5c1',
+    
+    `grey` = '#a5a5a5',
+    `lightgrey` = '#c9c9c9',
+    
+    `plum` = '#7b4264',
+    `lightplum` = '#b08ea3',
+    
+    # repreg palette
+    `sand` = '#c0a576',
+    `lightsand` = '#d9c9ac',
+    
+    `mint` = '#98b8b1',
+    `lightmint` = '#c2d4d0',
+    
+    `rose` = '#ba9a99',
+    `lightrose` = '#d5c2c2'
+    )
+
+  cols <- c(...)
+
+  if (is.null(cols))
+    return (scqm_colors)
+
+  scqm_colors[cols]
+}
+
+
+
+scqm_palette <- function(palette = "main", ...) {
+
+  scqm_palettes <- list(
+    `main` = scqm_color(c("blue", "grey", "plum")),
+    `mainlight` = scqm_color(c("lightblue", "lightgrey", "lightplum")),
+    
+    `repreg` = scqm_color(c("sand", "mint", "rose")),
+    `repreglight` = scqm_color(c("lightsand", "lightmint", "lightrose")),
+    
+    # diagnose palette
+    `diagnose` = scqm_color(c("blue", "sand", "plum", "mint", "rose"))
+  )
+  
+  # change the names for the diagnose vector
+  names(scqm_palettes$diagnose) <- c("RA", "axSpA", "PsA", "PMR", "GCA")
+
+  scqm_palettes[[palette]]
+
+}
+
+
+# show the palettes we created
+scales::show_col(scqm_palette("main"), cex_label = 2)
+scales::show_col(scqm_palette("mainlight"), cex_label = 2)
+scales::show_col(scqm_palette("repreg"), cex_label = 2)
+scales::show_col(scqm_palette("repreglight"), cex_label = 2)
+```
+
+
+### defining ggplot color scales
+We will now define functions which define custom ggplot color scales.
+```{r}
+palette_gen <- function(palette = "main", direction = 1) {
+
+  function(n) {
+
+    if (n > length(scqm_palette(palette)))
+      warning("Not enough colors in this palette!")
+
+    else {
+
+      all_colors <- scqm_palette(palette)
+
+      all_colors <- unname(unlist(all_colors))
+
+      all_colors <- if (direction >= 0) all_colors else rev(all_colors)
+
+      color_list <- all_colors[1:n]
+
+    }
+  }
+}
+
+
+scale_fill_scqm <- function(palette = "main", direction = 1, ...) {
+
+  ggplot2::discrete_scale(
+    "fill", "scqm",
+    palette_gen(palette, direction),
+    ...
+  )
+}
+
+
+# with main palette
+p +
+  theme_scqm() +
+  scale_fill_scqm()
+
+
+# with repreg palette
+p +
+  theme_scqm() +
+  scale_fill_scqm("repreg")
+
+
+# with repreg light palette
+p +
+  theme_scqm() +
+  scale_fill_scqm("repreglight")
+```
+
+If you do not want to use the colors of a palette but manually select your
+choice of CICD colors, you can use scale_fill_manual().
+```{r}
+# with manually selected colors
+p +
+  theme_scqm()+
+  scale_fill_manual(values =  
+                      unname(c(scqm_color("grey", "lightsand", "lightrose"))))
+```
+
+### taking it further
+Often, I want to keep the color for i.e. the different diseases 
+consistent across my entire report. The first obvious choice is to use
+a custom palette for diagnose.
+```{r}
+# palette 'diagnose'
+p +
+  theme_scqm() +
+  scale_fill_scqm("diagnose")
+
+
+# Drawback: color is assigned by level ordering (1st is RA 'blue', not RA)
+# this only works if you order 'disease' in the same order as in the palette
+# an example of where it does not work:
+dat_sum_releveled <- dat_sum %>% mutate(disease = relevel(disease, ref = "PsA"))
+ggplot(dat_sum_releveled, 
+       aes(x = inclusion_year, y = n_cumulative, fill = disease)) +
+  geom_area(stat = "identity") +
+  facet_wrap(~gender)+
+  theme_scqm() +
+  scale_fill_scqm("diagnose")
+```
+
+I therefore played around with hardcoding the colors with a named vector.
+This works nicely, if the vector has exactly the length and order of your levels.
+```{r}
+# my best solution so far:
+# even thoughRA is no longer the reference level, RA is still blue
+diagnose_colors <- scqm_palette("diagnose")[levels(dat_sum_releveled$disease)]
+ggplot(dat_sum_releveled, 
+       aes(x = inclusion_year, y = n_cumulative, fill = disease)) +
+  geom_area(stat = "identity") +
+  facet_wrap(~gender)+
+  theme_scqm() +
+scale_fill_manual(values = diagnose_colors)
+
+
+## a different color for gender
+gender_colors <- scqm_color("mint", "sand")
+names(gender_colors) <- c("m", "f")
+
+ggplot(dat_sum, 
+       aes(x = inclusion_year, y = n_cumulative, fill = gender)) +
+  geom_area(stat = "identity") +
+  facet_wrap(~disease)+
+  theme_scqm() +
+scale_fill_manual(values = gender_colors)
+```
+
+### a quick preview of other color scales
+We now only showed examples of the color scale 'fill'.
+Here are a few examples of other types of graphs.
+```{r}
+scale_colour_scqm <- function(palette = "main", direction = 1, ...) {
+
+  ggplot2::discrete_scale(
+    "colour", "scqm",
+    palette_gen(palette, direction),
+    ...
+  )
+}
+
+
+# alias
+scale_color_scqm <- scale_colour_scqm
+
+
+### line plot .............
+ggplot(dat_sum, 
+       aes(x = inclusion_year, y = n_cumulative, color = disease, label = label)) +
+  geom_line() +
+  # we don't want to show a warning for the missing values and we do not want 'a' in the legend
+  geom_label(na.rm = TRUE, show.legend = FALSE) + 
+  
+  facet_wrap(~gender)+
+  theme_scqm() +
+  scale_color_scqm()
+
+
+### dot plot .............
+ggplot(dat_sum, 
+       aes(x = inclusion_year, y = n_cumulative, color = disease, label = label)) +
+  geom_point() +
+  theme_scqm() +
+  scale_color_scqm()
+
+
+### box plot .............
+ggplot(dat_sum, 
+       aes(x = disease, y = n, fill = gender, label = label)) +
+  geom_boxplot() +
+  theme_scqm() +
+  scale_fill_manual(values = gender_colors)
+```
+
+## Graphic Promo Material
+For the GIF to promote the event.
+```{r}
+p <- ggplot(dat_sum, aes(x = inclusion_year, y = n_cumulative, fill = disease)) +
+  geom_area(stat = "identity") +
+  facet_wrap(~gender) +
+  xlab("year of inclusion") +
+  ylab("cumulative number of patients")
+
+# original
+p
+
+# with scqm theme
+p + theme_scqm()
+
+
+# with scqm theme and color scheme
+p +   
+  theme_scqm() +
+  scale_fill_scqm()
+
+
+# with scqm theme and other color scheme
+p +   
+  theme_scqm() +
+  scale_fill_scqm("repreg")
+
+p +   
+  theme_scqm() +
+  scale_fill_scqm("repreglight")
+```
+
+
+## Outlook
+- workshop zu package development im 2023
+- ohne package: im übergeordneten Ordner, dann im initialize file "source"
+- choosing colors:  https://nrennie.rbind.io/talks/2022-october-rladies-london/
+
+
+```{r, include=FALSE}
+# from https://stackoverflow.com/questions/10504724/change-the-default-colour-palette-in-ggplot
+# options(ggplot2.discrete.colour= scqm_colors)
+# options(ggplot2.discrete.fill= scqm_colors)
+# options(ggplot2.discrete.fill= scqm_colors)
+
+
+# wanted to change the setting globally, could not find out how. 
+# in the end, added the line to each plot
+# options(ggplot2.legend.direction= "reverse")
+# https://aosmith.rbind.io/2018/01/19/reversing-the-order-of-a-ggplot2-legend/
+```
+
